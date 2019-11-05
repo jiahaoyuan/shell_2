@@ -10,18 +10,19 @@
 
 int valid_command() { return 1; }
 
-void tokenize_cmd(char *cmd, int max, char *argv[]) {
+int tokenize_cmd(char *cmd, int max, char *argv[]) {
     if (!valid_command()) {
-        return;
+        return -1;
     }
     int num_args = 0;
-    if (cmd == NULL) return;
+    if (cmd == NULL) return 0;
 
     argv[0] = strtok(cmd, " \t\n");
     while ((num_args < max) && (argv[num_args] != NULL)) {
         num_args += 1;
         argv[num_args] = strtok(NULL, " \t\n");
     }
+    return num_args;
 }
 
 void redirect_trunc(char filename[]) {
@@ -101,7 +102,10 @@ void ready_command(char *cmd) {
         return;
     }
 
-    tokenize_cmd(cmd, MAX_ARGV, argv);
+    int num_argv = tokenize_cmd(cmd, MAX_ARGV, argv);
+    if (num_argv == -1 || num_argv == 0){
+      return;
+    }
     // if (!argv[0]){
     //   return;
     // }
@@ -118,7 +122,19 @@ void ready_command(char *cmd) {
         unlink(argv[1]);
     } else if (!strcmp(argv[0], "exit")) {
         exit(0);
+    } else if (!strcmp(argv[0], "jobs")) {
+      // TODO: list all the jobs
+    } else if (!strcmp(argv[0], "fg")) {
+      // TODO: fg
+    } else if (!strcmp(argv[0], "bg")) {
+      // TODO: bg
     } else {
+        // TODO: RUN in background
+        int background = 0;
+        if (!(strcmp(argv[num_argv - 1], "&"))){
+          background = 1;
+          argv[num_argv - 1] = NULL;
+        }
         // FORK and EXECUTE
         pid_t pid;
         int status;
@@ -126,11 +142,13 @@ void ready_command(char *cmd) {
             execute_command(argv);
             exit(0);
         }
-        waitpid(pid, &status, 0);
-        if (WIFEXITED(status)){
-          printf("pid %d terminated normally\n", pid);
-        } else {
-          printf("pid %d terminated NOT normally\n", pid);
+        if (!background) {
+          waitpid(pid, &status, 0);
+          if (WIFEXITED(status)){
+            printf("(%d) terminated normally\n", pid);
+          } else {
+            printf("(%d) terminated NOT normally\n", pid);
+          }
         }
     }
 }
