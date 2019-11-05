@@ -4,9 +4,18 @@
 #include <string.h>
 #include <sys/wait.h>
 #include <unistd.h>
+#include <errno.h>
+#include <signal.h>
+#include "./jobs.h"
 
 #define MAX_ARGV 10
 #define MAX_CMD 1024
+
+void signal_reset();
+void handle_background_process(pid_t pid);
+static int jid;
+static job_list_t *job_list;
+static char buf[MAX_CMD];
 
 int valid_command() { return 1; }
 
@@ -124,6 +133,7 @@ void ready_command(char *cmd) {
         exit(0);
     } else if (!strcmp(argv[0], "jobs")) {
       // TODO: list all the jobs
+        jobs(job_list);
     } else if (!strcmp(argv[0], "fg")) {
       // TODO: fg
     } else if (!strcmp(argv[0], "bg")) {
@@ -138,26 +148,67 @@ void ready_command(char *cmd) {
         // FORK and EXECUTE
         pid_t pid;
         int status;
+
         if ((pid = fork()) == 0) {
+            // signal handler back to default
+            signal_reset();
             execute_command(argv);
             exit(0);
         }
+
+
         if (!background) {
+          setpgid(pid, pid);
+          tcsetpgrp(0, pid);
           waitpid(pid, &status, 0);
+          tcsetpgrp(0, getpgid(getpid()));
           if (WIFEXITED(status)){
-            printf("(%d) terminated normally\n", pid);
           } else {
-            printf("(%d) terminated NOT normally\n", pid);
           }
+        } else {
+          // register backgound process
+          handle_background_process(pid);
         }
     }
 }
 
+void handle_background_process(pid_t pid){
+  jid += 1;
+  printf("[%d] (%d)\n",jid, pid);
+  process_state_t state;
+  state = RUNNING;
+  if (add_job(job_list, jid, pid, state, buf) != 0){
+    perror("Failed to add to the list");
+  }
+}
+
+void signal_reset(){
+  signal(SIGINT, SIG_DFL);
+  signal(SIGTSTP, SIG_DFL);
+  signal(SIGQUIT, SIG_DFL);
+  signal(SIGTTOU, SIG_DFL);
+}
+
+void signal_ignore(){
+    signal(SIGINT, SIG_IGN);
+    signal(SIGTSTP, SIG_IGN);
+    signal(SIGQUIT, SIG_IGN);
+    signal(SIGTTOU, SIG_IGN);
+}
+
 int main() {
+    // signal handlers are installed
+    signal_ignore();
     pid_t pid = getpid();
-    printf("The Shell's PID is %d\n", pid);
-    char buf[MAX_CMD];
+    pid_t pgid = getpgid(pid);
+    printf("The Shell's PID is %d, PGID is %d\n", pid, pgid);
+
+    // init jobs list
+    jid = 0;
+    job_list = init_job_list();
+
     while (1) {
+        buf[0] = '\0';
 // PROMPT
 #ifdef PROMPT
         if (printf("33sh> ") < 0) {
