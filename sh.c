@@ -145,7 +145,7 @@ void ready_command(char *cmd) {
         int curr_jid = atoi(temp);
         int curr_pid;
         if ((curr_pid = get_job_pid(job_list, curr_jid)) == -1){
-          perror("Failed to get job pid");
+          printf("job not found\n");
           return;
         }
         kill(curr_pid, SIGCONT);
@@ -157,7 +157,7 @@ void ready_command(char *cmd) {
         int curr_jid = atoi(temp);
         int curr_pid;
         if ((curr_pid = get_job_pid(job_list, curr_jid)) == -1){
-          perror("Failed to get job pid");
+          printf("job not found\n");
           return;
         }
         kill(curr_pid, SIGCONT);
@@ -192,7 +192,7 @@ void ready_command(char *cmd) {
 
 void monitor_foreground_process(pid_t curr_pgid){ // pgid == pid now since setpgid(pid, pid)
   int status;
-  remove_job_pid(job_list, curr_pgid);
+  // remove_job_pid(job_list, curr_pgid); // if job succeed, remove from job_list; else update list
   tcsetpgrp(0, curr_pgid);
   waitpid(curr_pgid, &status, WUNTRACED);
   tcsetpgrp(0, getpgid(getpid()));
@@ -206,26 +206,37 @@ void handle_foreground_process(int wstatus, pid_t curr_pid){
     //     exit_status = 0;
     // }
     // printf("[%d] (%d) terminated with exit status <%d>\n", curr_jid, curr_pid, exit_status);
+    remove_job_pid(job_list, curr_pid);
   }
   if (WIFSIGNALED(wstatus)){ // terminated by a signal CTRL-C
-    jid += 1;
+    if (get_job_jid(job_list, curr_pid) == -1){ // first time
+      jid += 1;
+    }
     int term_sig = WTERMSIG(wstatus);
+    remove_job_pid(job_list, curr_pid);
     printf("[%d] (%d) terminated by signal %d\n", jid, curr_pid, term_sig);
   }
   if (WIFSTOPPED(wstatus)) { // stopped by a signal
-    jid += 1;
     int stop_sig = WSTOPSIG(wstatus);
-    printf("[%d] (%d) suspended by signal %d\n", jid, curr_pid, stop_sig);
     process_state_t state = STOPPED;
     //add suspended foreground process to job list
-    if (add_job(job_list, jid, curr_pid, state, buf) != 0){
-      perror("Failed to add suspended foreground process to list");
+    // if not exist already in the list
+    if (get_job_jid(job_list, curr_pid) == -1) {// not exist in list. meaning this foreground process is not brought by fg
+      jid += 1;
+      printf("[%d] (%d) suspended by signal %d\n", jid, curr_pid, stop_sig);
+      if (add_job(job_list, jid, curr_pid, state, buf) != 0){
+        perror("Failed to add suspended foreground process to list");
+      }
+    } else { // exist in list; meaning it is brought by cmd fg
+      printf("[%d] (%d) suspended by signal %d\n", jid, curr_pid, stop_sig);
+      if (update_job_pid(job_list, curr_pid, state) != 0){
+        perror("Failed to update suspended foreground process to list");
+      }
     }
   }
 }
 
 void handle_resumed_background_process(pid_t pid){
-  printf("[%d] (%d) resumed\n",jid, pid);
   process_state_t state;
   state = RUNNING;
   if (update_job_pid(job_list, pid, state) != 0){
@@ -262,7 +273,7 @@ void reap(){
   int wstatus;
   pid_t curr_pid;
   while ((curr_pid = get_next_pid(job_list)) != -1){
-    if (waitpid(curr_pid, &wstatus, WNOHANG|WUNTRACED) > 0){
+    if (waitpid(curr_pid, &wstatus, WNOHANG|WUNTRACED|WCONTINUED) > 0){
       if (WIFEXITED(wstatus)){ // terminated normally
         int curr_jid = get_job_jid(job_list, curr_pid);
         int exit_status;
@@ -271,20 +282,24 @@ void reap(){
         }
         remove_job_pid(job_list, curr_pid);
         printf("[%d] (%d) terminated with exit status %d\n", curr_jid, curr_pid, exit_status);
-      }
-      if (WIFSIGNALED(wstatus)){ // terminated by a signal
+      } else if (WIFSIGNALED(wstatus)){ // terminated by a signal
         int curr_jid = get_job_jid(job_list, curr_pid);
         int term_sig = WTERMSIG(wstatus);
         remove_job_pid(job_list, curr_pid);
         printf("[%d] (%d) terminated by signal %d\n", curr_jid, curr_pid, term_sig);
-      }
-      if (WIFSTOPPED(wstatus)) { // stopped by a signal, update its status
+      } else if (WIFSTOPPED(wstatus)) { // stopped by a signal, update its status
         int curr_jid = get_job_jid(job_list, curr_pid);
         int stop_sig = WSTOPSIG(wstatus);
         printf("[%d] (%d) suspended by signal %d\n", curr_jid, curr_pid, stop_sig);
         process_state_t state;
         state = STOPPED;
         update_job_jid(job_list, curr_jid, state);
+      } else if (WIFCONTINUED(wstatus)){
+        int curr_jid = get_job_jid(job_list, curr_pid);
+        process_state_t state;
+        state = RUNNING;
+        update_job_pid(job_list, curr_pid, state);
+        printf("[%d] (%d) resumed \n", curr_jid, curr_pid);
       }
     }
   }
