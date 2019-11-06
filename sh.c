@@ -12,8 +12,11 @@
 #define MAX_CMD 1024
 
 void signal_reset();
-void handle_background_process(pid_t pid);
+void handle_new_background_process(pid_t pid);
 void handle_foreground_process(int status, pid_t pid);
+void monitor_foreground_process(pid_t curr_pid);
+void handle_resumed_background_process(pid_t pid);
+
 static int jid;
 static job_list_t *job_list;
 static char buf[MAX_CMD];
@@ -136,9 +139,29 @@ void ready_command(char *cmd) {
       // TODO: list all the jobs
         jobs(job_list);
     } else if (!strcmp(argv[0], "fg")) {
-      // TODO: fg
+      // TODO: fg, resume the foreground job, must be two argv
+      // resume by sending signal SIGCONT and bring it foreground
+        char *temp = argv[1] + 1;
+        int curr_jid = atoi(temp);
+        int curr_pid;
+        if ((curr_pid = get_job_pid(job_list, curr_jid)) == -1){
+          perror("Failed to get job pid");
+          return;
+        }
+        kill(curr_pid, SIGCONT);
+        monitor_foreground_process(curr_pid);
     } else if (!strcmp(argv[0], "bg")) {
-      // TODO: bg
+      // TODO: bg, reumse the background job, must be two argv
+      // resume by sending signal SIGCONT
+        char *temp = argv[1] + 1;
+        int curr_jid = atoi(temp);
+        int curr_pid;
+        if ((curr_pid = get_job_pid(job_list, curr_jid)) == -1){
+          perror("Failed to get job pid");
+          return;
+        }
+        kill(curr_pid, SIGCONT);
+        handle_resumed_background_process(curr_pid);
     } else {
         // TODO: RUN in background
         int background = 0;
@@ -148,8 +171,6 @@ void ready_command(char *cmd) {
         }
         // FORK and EXECUTE
         pid_t pid;
-        int status;
-
         if ((pid = fork()) == 0) {
             // signal handler back to default
             signal_reset();
@@ -159,22 +180,32 @@ void ready_command(char *cmd) {
 
         if (!background) {
           setpgid(pid, pid);
-          tcsetpgrp(0, pid);
-          waitpid(pid, &status, WUNTRACED);
-          tcsetpgrp(0, getpgid(getpid()));
-          handle_foreground_process(status, pid);
+          monitor_foreground_process(pid);
         } else {
           // register backgound process
           setpgid(pid, pid);
-          handle_background_process(pid);
+          jid += 1;
+          handle_new_background_process(pid);
         }
     }
 }
 
+void monitor_foreground_process(pid_t curr_pgid){ // pgid == pid now since setpgid(pid, pid)
+  int status;
+  remove_job_pid(job_list, curr_pgid);
+  tcsetpgrp(0, curr_pgid);
+  waitpid(curr_pgid, &status, WUNTRACED);
+  tcsetpgrp(0, getpgid(getpid()));
+  handle_foreground_process(status, curr_pgid);
+}
+
 void handle_foreground_process(int wstatus, pid_t curr_pid){
   if (WIFEXITED(wstatus)){ // terminated normally
-    //int exit_status = WIFEXITED(wstatus);
-    //printf("[%d] (%d) terminated with exit status <%d>\n", curr_jid, curr_pid, exit_status);
+    // int exit_status = 1;
+    // if (WIFEXITED(wstatus)){
+    //     exit_status = 0;
+    // }
+    // printf("[%d] (%d) terminated with exit status <%d>\n", curr_jid, curr_pid, exit_status);
   }
   if (WIFSIGNALED(wstatus)){ // terminated by a signal CTRL-C
     jid += 1;
@@ -193,8 +224,16 @@ void handle_foreground_process(int wstatus, pid_t curr_pid){
   }
 }
 
-void handle_background_process(pid_t pid){
-  jid += 1;
+void handle_resumed_background_process(pid_t pid){
+  printf("[%d] (%d) resumed\n",jid, pid);
+  process_state_t state;
+  state = RUNNING;
+  if (update_job_pid(job_list, pid, state) != 0){
+    perror("Failed to update the list");
+  };
+}
+
+void handle_new_background_process(pid_t pid){
   printf("[%d] (%d)\n",jid, pid);
   process_state_t state;
   state = RUNNING;
@@ -226,7 +265,10 @@ void reap(){
     if (waitpid(curr_pid, &wstatus, WNOHANG|WUNTRACED) > 0){
       if (WIFEXITED(wstatus)){ // terminated normally
         int curr_jid = get_job_jid(job_list, curr_pid);
-        int exit_status = WIFEXITED(wstatus);
+        int exit_status;
+        if (WIFEXITED(wstatus)){
+          exit_status = 0;
+        }
         remove_job_pid(job_list, curr_pid);
         printf("[%d] (%d) terminated with exit status %d\n", curr_jid, curr_pid, exit_status);
       }
@@ -236,10 +278,13 @@ void reap(){
         remove_job_pid(job_list, curr_pid);
         printf("[%d] (%d) terminated by signal %d\n", curr_jid, curr_pid, term_sig);
       }
-      if (WIFSTOPPED(wstatus)) { // stopped by a signal
+      if (WIFSTOPPED(wstatus)) { // stopped by a signal, update its status
         int curr_jid = get_job_jid(job_list, curr_pid);
         int stop_sig = WSTOPSIG(wstatus);
         printf("[%d] (%d) suspended by signal %d\n", curr_jid, curr_pid, stop_sig);
+        process_state_t state;
+        state = STOPPED;
+        update_job_jid(job_list, curr_jid, state);
       }
     }
   }
