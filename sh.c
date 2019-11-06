@@ -13,6 +13,7 @@
 
 void signal_reset();
 void handle_background_process(pid_t pid);
+void handle_foreground_process(int status, pid_t pid);
 static int jid;
 static job_list_t *job_list;
 static char buf[MAX_CMD];
@@ -156,20 +157,40 @@ void ready_command(char *cmd) {
             exit(0);
         }
 
-
         if (!background) {
           setpgid(pid, pid);
           tcsetpgrp(0, pid);
-          waitpid(pid, &status, 0);
+          waitpid(pid, &status, WUNTRACED);
           tcsetpgrp(0, getpgid(getpid()));
-          if (WIFEXITED(status)){
-          } else {
-          }
+          handle_foreground_process(status, pid);
         } else {
           // register backgound process
+          setpgid(pid, pid);
           handle_background_process(pid);
         }
     }
+}
+
+void handle_foreground_process(int wstatus, pid_t curr_pid){
+  if (WIFEXITED(wstatus)){ // terminated normally
+    //int exit_status = WIFEXITED(wstatus);
+    //printf("[%d] (%d) terminated with exit status <%d>\n", curr_jid, curr_pid, exit_status);
+  }
+  if (WIFSIGNALED(wstatus)){ // terminated by a signal CTRL-C
+    jid += 1;
+    int term_sig = WTERMSIG(wstatus);
+    printf("[%d] (%d) terminated by signal %d\n", jid, curr_pid, term_sig);
+  }
+  if (WIFSTOPPED(wstatus)) { // stopped by a signal
+    jid += 1;
+    int stop_sig = WSTOPSIG(wstatus);
+    printf("[%d] (%d) suspended by signal %d\n", jid, curr_pid, stop_sig);
+    process_state_t state = STOPPED;
+    //add suspended foreground process to job list
+    if (add_job(job_list, jid, curr_pid, state, buf) != 0){
+      perror("Failed to add suspended foreground process to list");
+    }
+  }
 }
 
 void handle_background_process(pid_t pid){
@@ -196,18 +217,47 @@ void signal_ignore(){
     signal(SIGTTOU, SIG_IGN);
 }
 
+// reap all background processes
+// detect their state, update the list, and clean terminated process
+void reap(){
+  int wstatus;
+  pid_t curr_pid;
+  while ((curr_pid = get_next_pid(job_list)) != -1){
+    if (waitpid(curr_pid, &wstatus, WNOHANG|WUNTRACED) > 0){
+      if (WIFEXITED(wstatus)){ // terminated normally
+        int curr_jid = get_job_jid(job_list, curr_pid);
+        int exit_status = WIFEXITED(wstatus);
+        remove_job_pid(job_list, curr_pid);
+        printf("[%d] (%d) terminated with exit status %d\n", curr_jid, curr_pid, exit_status);
+      }
+      if (WIFSIGNALED(wstatus)){ // terminated by a signal
+        int curr_jid = get_job_jid(job_list, curr_pid);
+        int term_sig = WTERMSIG(wstatus);
+        remove_job_pid(job_list, curr_pid);
+        printf("[%d] (%d) terminated by signal %d\n", curr_jid, curr_pid, term_sig);
+      }
+      if (WIFSTOPPED(wstatus)) { // stopped by a signal
+        int curr_jid = get_job_jid(job_list, curr_pid);
+        int stop_sig = WSTOPSIG(wstatus);
+        printf("[%d] (%d) suspended by signal %d\n", curr_jid, curr_pid, stop_sig);
+      }
+    }
+  }
+}
+
 int main() {
     // signal handlers are installed
     signal_ignore();
-    pid_t pid = getpid();
-    pid_t pgid = getpgid(pid);
-    printf("The Shell's PID is %d, PGID is %d\n", pid, pgid);
+    //pid_t pid = getpid();
+    //pid_t pgid = getpgid(pid);
+    //printf("The Shell's PID is %d, PGID is %d\n", pid, pgid);
 
     // init jobs list
     jid = 0;
     job_list = init_job_list();
 
     while (1) {
+        reap();
         buf[0] = '\0';
 // PROMPT
 #ifdef PROMPT
@@ -222,6 +272,9 @@ int main() {
         buf[count] = '\0';
 
         // PARSE INPUT
+        if (count == 0) {
+          exit(0);
+        }
         if (count != 1) {
             ready_command(buf);
         }
